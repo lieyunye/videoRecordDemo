@@ -19,6 +19,11 @@ typedef enum :NSUInteger {
     VideoRecordStateStoped,
 } VideoRecordState;
 
+typedef enum :NSUInteger {
+    CameraDeviceInputStateFront,
+    CameraDeviceInputStateBack,
+} CameraDeviceInputState;
+
 @interface MediaUtils : NSObject
 + (AVCaptureDevice *)captureDeviceForPosition:(AVCaptureDevicePosition)position;
 + (AVCaptureDeviceInput *)deviceInputWithDevice:(AVCaptureDevice *)device;

@@ -11,32 +11,25 @@
 #import "MediaUtils.h"
 #import <Photos/Photos.h>
 #import <AssetsLibrary/ALAssetsLibrary.h>
+#import "VideoRecordHelper.h"
 
 @interface ViewController ()<AVCaptureVideoDataOutputSampleBufferDelegate>
-{
-    AVCaptureSession *_session;
-    AVCaptureDevice *_captureDeviceFront;
-    AVCaptureDevice *_captureDeviceBack;
-    AVCaptureDeviceInput *_captureDeviceInputFront;
-    AVCaptureDeviceInput *_captureDeviceInputBack;
-    
-    AVCaptureVideoDataOutput *_captureVideoDataOutput;
-    
-    AVAssetWriter *_assetWriter;
-    AVAssetWriterInput *_assetWriterInput;
-    AVAssetWriterInputPixelBufferAdaptor *_assetWriterInputPixelBufferAdaptor;
-    
-    VideoRecordState _videoRecordState;
-    
-    CMTime _videoTimestamp;
-    CMTime _timeOffset;
 
-
-}
-
+@property (weak, nonatomic) IBOutlet UIView *topView;
+@property (weak, nonatomic) IBOutlet UIView *bottomView;
+@property (weak, nonatomic) IBOutlet UIButton *redoBtn;
 @property (weak, nonatomic) IBOutlet UIButton *startRecordBtn;
-@property (weak, nonatomic) IBOutlet UIButton *stopReordBtn;
-@property (weak, nonatomic) IBOutlet UIButton *pauseRecordBtn;
+@property (weak, nonatomic) IBOutlet UIView *toolView;
+@property (weak, nonatomic) IBOutlet UILabel *durationLabel;
+
+
+
+
+@property (nonatomic, strong) VideoRecordHelper *videoRecordHelper;
+@property (nonatomic, strong) NSMutableArray *urlArray;
+@property (nonatomic, strong) AVPlayer *player;
+@property (nonatomic, strong) AVPlayerLayer *playerLayer;
+@property (nonatomic, strong) AVPlayerItem *playerItem;
 
 - (IBAction)startRecordAction:(id)sender;
 - (IBAction)stopRecordAction:(id)sender;
@@ -49,234 +42,159 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     // Do any additional setup after loading the view, typically from a nib.
-    
+    self.urlArray = [NSMutableArray array];
     self.view.backgroundColor = [UIColor redColor];
+    [self.navigationController.navigationBar setHidden:YES];
+    self.videoRecordHelper = [[VideoRecordHelper alloc] init];
+     __weak typeof(self) weakSelf = self;
+    self.videoRecordHelper.durationCallback = ^(NSTimeInterval duration){
+        weakSelf.durationLabel.text = [NSString stringWithFormat:@"%f",duration];
+    };
+    [self.videoRecordHelper configSession];
+    self.videoRecordHelper.captureVideoPreviewLayer.frame = CGRectMake(0, 0, CGRectGetWidth(self.view.bounds), CGRectGetHeight(self.view.bounds) / 2);
+    [self.topView.layer addSublayer:self.videoRecordHelper.captureVideoPreviewLayer];
     
-    _videoTimestamp = kCMTimeInvalid;
-    _timeOffset = kCMTimeInvalid;
+    
+    [[NSNotificationCenter defaultCenter]addObserver:self selector:@selector(AVPlayerItemDidPlayToEndTimeNotification:) name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
 
-    
-    _session = [[AVCaptureSession alloc] init];
-    [_session beginConfiguration];
-    _session.sessionPreset = AVCaptureSessionPresetiFrame960x540;
-    
-    AVCaptureVideoPreviewLayer *captureVideoPreviewLayer = [[AVCaptureVideoPreviewLayer alloc] initWithSession:_session];
-    captureVideoPreviewLayer.frame = self.view.bounds;
-    captureVideoPreviewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
-    [self.view.layer addSublayer:captureVideoPreviewLayer];
-    
-    _captureDeviceFront = [MediaUtils captureDeviceForPosition:AVCaptureDevicePositionFront];
-    _captureDeviceBack = [MediaUtils captureDeviceForPosition:AVCaptureDevicePositionBack];
-    
-    _captureDeviceInputFront = [MediaUtils deviceInputWithDevice:_captureDeviceFront];
-//    _captureDeviceInputBack = [MediaUtils deviceInputWithDevice:_captureDeviceBack];
-    
-    [_session addInput:_captureDeviceInputFront];
-//    [_session addInput:_captureDeviceInputBack];
-    
-    _captureVideoDataOutput = [[AVCaptureVideoDataOutput alloc] init];
-    [_captureVideoDataOutput setAlwaysDiscardsLateVideoFrames:YES];
-    [_captureVideoDataOutput setVideoSettings:[NSDictionary dictionaryWithObject:[NSNumber numberWithInt:kCVPixelFormatType_32BGRA]forKey:(id)kCVPixelBufferPixelFormatTypeKey]];
-    
-     [_captureVideoDataOutput setSampleBufferDelegate:self queue:dispatch_get_main_queue()];
-    
-    [_session addOutput:_captureVideoDataOutput];
-    
-    
-    AVCaptureConnection *conn = [_captureVideoDataOutput connectionWithMediaType:AVMediaTypeVideo];
-    [conn setVideoOrientation:AVCaptureVideoOrientationPortrait];
-    
-    [self initVideoWriter];
-
-    [_session commitConfiguration];
-    
-    [self.view bringSubviewToFront:_startRecordBtn];
-    [self.view bringSubviewToFront:_stopReordBtn];
-    [self.view bringSubviewToFront:_pauseRecordBtn];
-    
-    [_session startRunning];
-
-    
 }
+
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+}
+
+- (void)viewDidDisappear:(BOOL)animated
+{
+    [super viewDidDisappear:animated];
+    [self.navigationController.navigationBar setHidden:NO];
+}
+
+- (BOOL)prefersStatusBarHidden
+{
+    return YES;
+}
+
+- (IBAction)saveAction:(id)sender {
+    
+    
+    NSURL *outputURL = ((AVURLAsset *)self.playerItem.asset).URL;
+    if (outputURL == nil) {
+        return;
+    }
+    ALAssetsLibrary *library = [[ALAssetsLibrary alloc] init];
+    
+    if ([library videoAtPathIsCompatibleWithSavedPhotosAlbum:outputURL])  {
+        
+        [library writeVideoAtPathToSavedPhotosAlbum:outputURL completionBlock:^(NSURL *assetURL, NSError *error) {
+            
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (error) {
+                    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Error"
+                                                                    message:@"存档失败"
+                                                                   delegate:nil
+                                                          cancelButtonTitle:@"OK"
+                                                          otherButtonTitles:nil];
+                    [alert show];
+                }else {
+                    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Success"
+                                                                    message:@"存档成功"
+                                                                   delegate:self
+                                                          cancelButtonTitle:@"OK"
+                                                          otherButtonTitles:nil];
+                    [alert show];
+                }
+            });
+        }];
+        
+    }
+}
+
 
 - (void)didReceiveMemoryWarning {
     [super didReceiveMemoryWarning];
     // Dispose of any resources that can be recreated.
 }
 
+
+- (IBAction)changeTopCameraAction:(id)sender {
+    [self.videoRecordHelper changeCamera];
+}
+
+
+
+- (IBAction)redoAcion:(id)sender {
+    self.durationLabel.text = @"";
+    [self.urlArray removeAllObjects];
+    [self.playerLayer removeFromSuperlayer];
+    [self.topView.layer addSublayer:self.videoRecordHelper.captureVideoPreviewLayer];
+    [self.player pause];
+    self.player = nil;
+}
+
+
 - (IBAction)startRecordAction:(id)sender {
 
-    if (_videoRecordState == VideoRecordStateUnkonw) {
-        _videoRecordState = VideoRecordStateRecording;
-    }else {
-        _videoRecordState = VideoRecordStateResumeRecord;
+    if (self.videoRecordHelper.videoRecordState == VideoRecordStateUnkonw) {
+        [self performSelector:@selector(stopTopViewRecording) withObject:nil afterDelay:10];
     }
+    [self.videoRecordHelper startRecord];
 }
 
 - (IBAction)stopRecordAction:(id)sender {
-
-    _videoRecordState = VideoRecordStateUnkonw;
-    _timeOffset = kCMTimeInvalid;
-
-    [_assetWriterInput markAsFinished];
-
-    [_assetWriter finishWritingWithCompletionHandler:^{
-        NSLog(@"finishWritingWithCompletionHandler");
+     __weak typeof(self) weakSelf = self;
+    [self.videoRecordHelper stopRecord:^(NSURL *url) {
+        if (url) {
+            [weakSelf.urlArray addObject:url];
+        }
+        if (weakSelf.urlArray.count == 2) {
+            NSLog(@"mergeTwoVideosWithFirstAsset start");
+            AVURLAsset* firstAsset = [AVURLAsset URLAssetWithURL:self.urlArray.firstObject options:nil];
+            AVURLAsset * secondAsset = [AVURLAsset URLAssetWithURL:self.urlArray.lastObject options:nil];
+            __weak typeof(self) weakSelf = self;
+            [self.videoRecordHelper mergeTwoVideosWithFirstAsset:firstAsset secondAsset:secondAsset complete:^(NSString *url) {
+                NSLog(@"mergeTwoVideosWithFirstAsset finished");
+                [weakSelf playVideo:url];
+            }];
+        }
     }];
     
-    
-    ALAssetsLibrary *library = [[ALAssetsLibrary alloc] init];
-    
-    // 将临时文件夹中的视频文件复制到 照片 文件夹中，以便存取
-    [library writeVideoAtPathToSavedPhotosAlbum:_assetWriter.outputURL
-                                completionBlock:^(NSURL *assetURL, NSError *error) {
-                                    
-                                    if (error) {
-                                        
-                                    }
-                                    else {
-                                        
-                                    }
-                                }];
-    
-    [self initVideoWriter];
-
 }
 
 - (IBAction)pauseRecordAction:(id)sender {
-
-    _videoRecordState = VideoRecordStateInteruped;
+    [self.videoRecordHelper pauseRecord];
 }
 
--(void) initVideoWriter{
-    
-    CGSize size = CGSizeMake(540, 960);
-    NSString *guid = [[NSUUID new] UUIDString];
-    NSString *outputFile = [NSString stringWithFormat:@"video_%@.mp4", guid];
-    NSString *outputDirectory = NSTemporaryDirectory();
-    NSString *outputPath = [outputDirectory stringByAppendingPathComponent:outputFile];
-    NSURL *outputURL = [NSURL fileURLWithPath:outputPath];
-        
-    NSError *error = nil;
-    
-    //----initialize compression engine
-    
-    _assetWriter = [[AVAssetWriter alloc] initWithURL:outputURL
-                                                 fileType:AVFileTypeQuickTimeMovie
-                                                    error:&error];
-    
-    NSParameterAssert(_assetWriter);
-    
-    if(error){
-        NSLog(@"error = %@", [error localizedDescription]);
-    }
-    
-    NSDictionary *videoCompressionProps = [NSDictionary dictionaryWithObjectsAndKeys:
-                                           
-                                           [NSNumber numberWithDouble:1700000],AVVideoAverageBitRateKey,
-                                           
-                                           nil ];
-    
-    
-    
-    NSDictionary *videoSettings = [NSDictionary dictionaryWithObjectsAndKeys:AVVideoCodecH264,AVVideoCodecKey,AVVideoScalingModeResizeAspectFill,AVVideoScalingModeKey,
-                                   [NSNumber numberWithInt:size.width], AVVideoWidthKey,
-                                   [NSNumber numberWithInt:size.height],AVVideoHeightKey,videoCompressionProps, AVVideoCompressionPropertiesKey, nil];
-    
-    _assetWriterInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:videoSettings];
-//    _assetWriterInput.transform = CGAffineTransformMakeRotation( ( 90 * M_PI ) / 180 );
-    
-    NSParameterAssert(_assetWriterInput);
-    
-    _assetWriterInput.expectsMediaDataInRealTime = YES;
-    
-    NSParameterAssert(_assetWriterInput);
-    
-    NSParameterAssert([_assetWriter canAddInput:_assetWriterInput]);
-    
-    
-    
-    if ([_assetWriter canAddInput:_assetWriterInput])
-        NSLog(@"I can add this input");
-    else{
-        NSLog(@"i can't add this input");
-    }
-    
-    
-    [_assetWriter addInput:_assetWriterInput];
-    
-}
-
-
-- (void)captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection
+- (void)stopTopViewRecording
 {
-    @autoreleasepool {
-        
-        CMTime lastSampleTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-        
-        if( _videoRecordState == VideoRecordStateRecording && _assetWriter.status != AVAssetWriterStatusWriting  ){
-            [_assetWriter startWriting];
-            [_assetWriter startSessionAtSourceTime:lastSampleTime];
-        }
-        
-        if (captureOutput == _captureVideoDataOutput){
-            
-            if (_videoRecordState == VideoRecordStateResumeRecord) {
-                if (CMTIME_IS_VALID(lastSampleTime) && CMTIME_IS_VALID(_videoTimestamp)) {
-                    CMTime offset = CMTimeSubtract(lastSampleTime, _videoTimestamp);
-                    if (CMTIME_IS_INVALID(_timeOffset)) {
-                        _timeOffset = offset;
-                    }else {
-                        _timeOffset = CMTimeAdd(_timeOffset, offset);
-                    }
-                }
-                _videoRecordState = VideoRecordStateRecording;
-            }
-            
-            if (_videoRecordState == VideoRecordStateInteruped) {
-                
-                _videoTimestamp = lastSampleTime;
-                _videoRecordState = VideoRecordStatePausing;
-            }
-            
-            if ( _assetWriter.status > AVAssetWriterStatusWriting ){
-                NSLog(@"Warning: writer status is %ld", (long)_assetWriter.status);
-                if( _assetWriter.status == AVAssetWriterStatusFailed){
-                    NSLog(@"Error: %@", _assetWriter.error);
-                }
-                return;
-            }
-            
-            if (_videoRecordState == VideoRecordStateRecording && [_assetWriterInput isReadyForMoreMediaData]){
-                // adjust the sample buffer if there is a time offset
-                CMSampleBufferRef bufferToWrite = NULL;
-                if (CMTIME_IS_VALID(_timeOffset)) {
-                    bufferToWrite = [MediaUtils createOffsetSampleBufferWithSampleBuffer:sampleBuffer withTimeOffset:_timeOffset];
-                    if (!bufferToWrite) {
-                        NSLog(@"error subtracting the timeoffset from the sampleBuffer");
-                    }
-                } else {
-                    bufferToWrite = sampleBuffer;
-                    CFRetain(bufferToWrite);
-                }
-                if( ![_assetWriterInput appendSampleBuffer:bufferToWrite] ){
-                    
-                    NSLog(@"Unable to write to video input");
-                }else {
-                    NSLog(@"already write vidio");                    
-                }
-                if (bufferToWrite) {
-                    CFRelease(bufferToWrite);
-                }
-            }
-        }
+    [self stopRecordAction:nil];
+    if (self.videoRecordHelper.captureVideoPreviewLayer.superlayer == self.topView.layer) {
+        [self.bottomView.layer addSublayer:self.videoRecordHelper.captureVideoPreviewLayer];
+    }else {
+        [self.videoRecordHelper.captureVideoPreviewLayer removeFromSuperlayer];
     }
-    
 }
 
-- (void)captureOutput:(AVCaptureOutput *)captureOutput didDropSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection
+- (void)playVideo:(NSString *)urlPath
 {
-    NSLog(@"%s",__FUNCTION__);
+    AVAsset *asset = [AVAsset assetWithURL:[NSURL fileURLWithPath:urlPath]];
+    _playerItem = [AVPlayerItem playerItemWithAsset:asset];
+    _player = [AVPlayer playerWithPlayerItem:_playerItem];
+    _playerLayer = [AVPlayerLayer playerLayerWithPlayer:self.player];
+    self.playerLayer.frame = [UIScreen mainScreen].bounds;
+    self.playerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+    [self.view.layer addSublayer:self.playerLayer];
+    [_player play];
+    [self.view bringSubviewToFront:self.toolView];
 }
 
+
+- (void)AVPlayerItemDidPlayToEndTimeNotification:(NSNotification *)note
+{
+    AVPlayerItem * p = [note object];
+    //关键代码
+    [p seekToTime:kCMTimeZero];
+    
+    [self.player play];
+}
 @end
